@@ -1,1 +1,1 @@
-# git stauts but pretty
+# git status but pretty
