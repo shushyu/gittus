@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# git-st – clean git status overview for GitLernen (Work Dir → Stage → Repo)
+# Installation: install -m 755 git-st /usr/local/bin/git-st
+# Usage:        git st   (git picks up git-<name> in PATH as a subcommand)
+# Requires on Alpine: apk add bash git
+
+git rev-parse --git-dir &>/dev/null || { echo "Not a git repository." >&2; exit 1; }
+
+cols=${COLUMNS:-$(stty size 2>/dev/null | cut -d' ' -f2)}
+[[ -n $cols ]] || cols=80
+
+if [[ -t 1 && -z $NO_COLOR ]]; then color=1; else color=0; fi
+
+{
+  git -c core.quotePath=false status --porcelain=v2 --branch
+  echo "# count $(git rev-list --count HEAD 2>/dev/null || echo 0)"
+  git log -3 --format='@ %h %s' 2>/dev/null
+} | awk -v cols="$cols" -v color="$color" '
+function c(code, s)   { return color ? "\033[" code "m" s "\033[0m" : s }
+function rep(ch, n,  r) { r = ""; while (n-- > 0) r = r ch; return r }
+function cut(s, w)    { return length(s) > w ? substr(s, 1, w - 2) ".." : s }
+function sym(k)       { return k == "M" || k == "T" ? "~" : k == "A" || k == "C" ? "+" : k == "D" ? "-" : k == "R" ? ">" : k }
+# cell: colored symbol + name, padded to width w; no symbol = dimmed placeholder
+function cell(s, n, w, code,  t) {
+  if (s == "") { t = cut(n, w); return c("2", t) rep(" ", w - length(t)) }
+  t = cut(n, w - length(s) - 1)
+  return c(code, s) " " t rep(" ", w - length(s) - 1 - length(t))
+}
+function strip(line, k) { while (k-- > 0) sub(/^[^ ]+ /, "", line); return line }
+
+/^# branch.head /     { head = $3 }
+/^# branch.upstream / { up = $3 }
+/^# branch.ab /       { ahead = substr($3, 2) + 0; behind = substr($4, 2) + 0 }
+/^# count /           { count = $3 + 0 }
+/^@ /                 { rs[++nr] = $2; rn[nr] = strip($0, 2) }
+/^[?] /               { ws[++nw] = "?"; wn[nw] = substr($0, 3) }
+/^[12] / {
+  p = strip($0, $1 == "1" ? 8 : 9); sub(/\t.*/, "", p)
+  x = substr($2, 1, 1); y = substr($2, 2, 1)
+  if (x != ".") { ss[++ns] = sym(x); sn[ns] = p }
+  if (y != ".") { ws[++nw] = sym(y); wn[nw] = p }
+}
+/^u / { ws[++nw] = "!"; wn[nw] = strip($0, 10) }
+
+END {
+  cw = int((cols - 8) / 3); if (cw > 28) cw = 28; if (cw < 16) cw = 16
+  cW = "1;38;5;216"; cS = "1;38;5;114"; cR = "1;38;5;111"
+
+  # header
+  if (head == "(detached)") head = "detached HEAD"
+  l = " " c("1", head) c("2", " · " count " Commit" (count == 1 ? "" : "s"))
+  if (up != "") l = l c("2", "  ↑" ahead " ↓" behind " " up)
+  print l; print ""
+
+  # column headers
+  print " " c(cW, "WORK DIR") rep(" ", cw - 8) "   " c(cS, "STAGE") rep(" ", cw - 5) "   " c(cR, "REPO")
+  print " " c("2", rep("─", cw) "   " rep("─", cw) "   " rep("─", cw))
+
+  # placeholders
+  if (nw == 0) { ws[1] = ""; wn[1] = "(clean)"; nw = 1 }
+  if (ns == 0) { ss[1] = ""; sn[1] = "(empty)";   ns = 1 }
+  if (count == 0) { rs[1] = ""; rn[1] = "(no commits yet)"; nr = 1 }
+  else if (count > 3) { rs[++nr] = ""; rn[nr] = "+" (count - 3) " older" }
+
+  rows = nw; if (ns > rows) rows = ns; if (nr > rows) rows = nr
+  for (i = 1; i <= rows; i++)
+    print " " (i <= nw ? cell(ws[i], wn[i], cw, cW) : rep(" ", cw)) "   " \
+               (i <= ns ? cell(ss[i], sn[i], cw, cS) : rep(" ", cw)) "   " \
+               (i <= nr ? cell(rs[i], rn[i], cw, cR) : "")
+}'
+
